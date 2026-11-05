@@ -236,7 +236,11 @@ async function engineReadiness() {
   try {
     const response = await fetch(config.baseUrl + '/readyz', { signal: AbortSignal.timeout(5000) });
     const body = await response.json() as Record<string, unknown>;
-    const publicBaseUrl = names.includes('PUBLIC_HOSTING_BASE_URL') ? (await secrets.readSecret('PUBLIC_HOSTING_BASE_URL')).replace(/\/$/, '') : null;
+    let publicBaseUrl: string | null = null;
+    if (names.includes('PUBLIC_HOSTING_BASE_URL')) {
+      const candidate = new URL((await secrets.readSecret('PUBLIC_HOSTING_BASE_URL')).trim());
+      if (candidate.protocol === 'https:' && !candidate.username && !candidate.password && candidate.pathname === '/' && !candidate.search && !candidate.hash) publicBaseUrl = candidate.origin;
+    }
     const checks = body.checks as Record<string, unknown> | undefined;
     return { configured: true, ready: response.ok && body.status === 'ready', message: response.ok ? 'Go API and required infrastructure report ready.' : 'Go API is reachable but one or more dependencies are not ready.', buildExecution: checks?.buildExecution || 'unknown', publicBaseUrl };
   } catch { return { configured: true, ready: false, message: 'Could not reach the Go engine readiness endpoint.' }; }
