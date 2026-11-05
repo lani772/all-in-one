@@ -4,7 +4,7 @@ The full Go source tree is maintained in the Milestone 18 source package deliver
 
 Module path: `github.com/lani772/all-in-one/engine`.
 
-Run from this directory after importing the source tree:
+After importing the source tree:
 
 ```bash
 cp .env.example .env
