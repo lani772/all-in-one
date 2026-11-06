@@ -11,12 +11,13 @@ The object-store adapter must target a **private bucket** and consume exactly th
 ### Commands
 
 ```bash
-gofmt -w ./internal/...
+gofmt -w internal/artifact/*.go
 go test ./...
+go test -race ./...
 go vet ./...
 ```
 
-Apply `migrations/0001_deployments.sql` only after the engine's core `projects` table has been created. Review the schema and backup the database before applying it.
+Apply `migrations/0001_deployments.sql` only after the engine's core `projects` table has been created. Review the schema and back up the database before applying it.
 
 ### Security boundary
 
