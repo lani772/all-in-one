@@ -12,9 +12,9 @@ func validManifest() artifact.Manifest {
 		CreatedAt: "2026-11-07T09:00:00Z", TotalBytes: 3,
 		Files: []artifact.File{{
 			Path: "index.html", Size: 3,
-			SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			SHA256:      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			ContentType: "text/html; charset=utf-8",
-			ObjectKey: "sites/project1/deployments/deploy1/files/index.html",
+			ObjectKey:   "sites/project1/deployments/deploy1/files/index.html",
 		}},
 	}
 }
