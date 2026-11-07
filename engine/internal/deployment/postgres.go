@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"path"
 	"strings"
 	"time"
@@ -139,7 +140,7 @@ func validateCommit(ownerID string, manifest artifact.Manifest, manifestKey stri
 	var total int64
 	seen := make(map[string]struct{}, len(manifest.Files))
 	for _, file := range manifest.Files {
-		if file.Path == "" || strings.Contains(file.Path, "\\") || path.IsAbs(file.Path) || path.Clean(file.Path) != file.Path || !path.IsLocal(file.Path) {
+		if file.Path == "" || strings.Contains(file.Path, "\\") || path.IsAbs(file.Path) || path.Clean(file.Path) != file.Path || !fs.ValidPath(file.Path) {
 			return fmt.Errorf("unsafe deployment file path %q", file.Path)
 		}
 		if _, ok := seen[file.Path]; ok {
