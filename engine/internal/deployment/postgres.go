@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lani772/all-in-one/engine/internal/artifact"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/lani772/all-in-one/engine/internal/artifact"
 )
 
 var ErrProjectNotFound = errors.New("project not found")
