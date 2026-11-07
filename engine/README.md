@@ -1,47 +1,67 @@
-# Go hosting engine source
+# All-in-One Hosting — Go control API and artifact storage
 
-This directory contains the repository-native static artifact pipeline.
+The Go engine contains the Milestone 19 immutable artifact publisher, Milestone 20 PostgreSQL/S3 adapters, and the Milestone 21 authenticated project/source control API.
 
-## Milestone 19 — artifact publication core
+## Milestone 21 — control API
 
-`internal/artifact` creates deterministic manifests for completed static build outputs, rejects symlinks and non-regular files, blocks common secret files, enforces file-count and byte limits, hashes files with SHA-256, and uploads under immutable deployment-specific object keys.
+- `cmd/api` starts the Go HTTP API with bounded timeouts and graceful shutdown.
+- `internal/auth` verifies the dashboard's HMAC request headers, enforces a five-minute timestamp window, and consumes one-time 192-bit nonces in PostgreSQL.
+- `internal/controlapi` creates projects and unique slugs, issues short-lived size-bounded source ZIP POST policies, verifies finalized object sizes, and lists owner-scoped deployments.
+- `internal/objectstore/source.go` adds the private source-upload namespace and MinIO presigned PUT/stat operations.
+- `migrations/0002_control_plane.sql` adds project slugs, source upload metadata and replay-protection nonces.
 
-## Milestone 20 — production storage and database adapters
+The API deliberately returns HTTP 503 for build creation/status/cancellation until a real Redis consumer and isolated Docker build worker are connected. It does not create a fake queued job.
 
-- `internal/objectstore` implements the private S3-compatible object store using MinIO's Go SDK. It validates deployment-scoped object keys, requires an already provisioned bucket, and never changes bucket ACL or policy.
-- `internal/deployment` implements the PostgreSQL repository using pgx through `database/sql`. It locks the project row, verifies ownership, inserts the deployment and file rows, supersedes the prior ready deployment, and switches the current deployment pointer in one serializable transaction.
-- `migrations/0000_projects.sql` creates the Go engine's dedicated projects table. Apply it before `0001_deployments.sql`.
+## Configure and run
 
-### Configure
-
-Copy `.env.example` to `.env` and supply production credentials through a secret manager. Do not commit `.env`, credentials, or tenant build secrets.
-
-Provision the bucket as private before starting the service. For a local MinIO instance, for example:
+Requirements: Go 1.23+, PostgreSQL, and a private S3-compatible bucket (MinIO works for local development).
 
 ```bash
-mc mb --ignore-existing local/hosting-artifacts
-mc anonymous set none local/hosting-artifacts
-```
-
-Run migrations in order against the dedicated engine database:
-
-```bash
+cp .env.example .env
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0000_projects.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0001_deployments.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0002_control_plane.sql
+go mod tidy
+go run ./cmd/api
 ```
 
-Then verify the module:
+The API listens on `:8080` by default. `/healthz` is liveness; `/readyz` checks PostgreSQL and the configured S3 bucket. Readiness reports `buildExecution: not-connected` until the build worker exists.
+
+Build the container with:
 
 ```bash
-go mod tidy
-gofmt -w internal
+docker build -f Dockerfile.api -t allinone-hosting-api:local .
+```
+
+## Dashboard connection
+
+Set encrypted dashboard secrets:
+- `ENGINE_API_URL` — HTTPS origin of the Go API (no path/query/fragment).
+- `AUTH_HMAC_SECRET` — same random secret as the Go API environment, at least 32 bytes.
+
+The dashboard backend signs requests; the browser never receives this secret. Keep the Go API behind HTTPS and a network policy that only permits the trusted dashboard backend. Do not trust `X-Authenticated-User` from public clients.
+
+Configure S3/MinIO CORS to allow `POST` from the dashboard origin with the `Content-Type` request header. The POST policy enforces the exact declared object size and `application/zip` type. The bucket must remain private.
+
+## API
+
+- `GET /healthz`
+- `GET /readyz`
+- `POST /api/v1/projects`
+- `POST /api/v1/projects/{id}/source-upload`
+- `POST /api/v1/projects/{id}/source-finalize`
+- `GET /api/v1/projects/{id}/deployments`
+- Build endpoints return explicit 503 until build execution is connected.
+
+All `/api/v1/*` routes require the HMAC headers created by the dashboard backend.
+
+## Tests and verification
+
+```bash
+gofmt -w cmd internal
 go test ./...
 go test -race ./...
 go vet ./...
 ```
 
-### Integration boundary
-
-The adapters are not yet wired into a public HTTP route or build worker. The caller must derive `ownerID` from verified authentication, never from a client-supplied header. Publish only a completed, immutable output directory after the build process has stopped. Do not expose the S3 bucket publicly. The hosting gateway must resolve a project slug to its current deployment and serve only manifest-listed keys. Next.js SSR requires a separate runtime service and is not handled by this static artifact store.
-
-The database transaction serializes publishes per project through `SELECT ... FOR UPDATE`. If COMMIT returns a network error, the publisher must retain uploaded objects and let reconciliation inspect database references before cleanup; deleting them immediately could break a successfully committed deployment.
+A full build requires the Go module dependencies to be downloadable. The local auth/control API helper tests use standard-library packages; object storage and PostgreSQL integration require dependencies and live services for end-to-end verification.
