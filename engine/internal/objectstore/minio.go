@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"path"
 	"regexp"
 	"strings"
@@ -96,7 +97,7 @@ func (s *MinIOStore) Delete(ctx context.Context, keys []string) error {
 }
 
 func validObjectKey(key string) bool {
-	if key == "" || strings.Contains(key, "\\") || path.IsAbs(key) || path.Clean(key) != key || !path.IsLocal(key) {
+	if key == "" || strings.Contains(key, "\\") || path.IsAbs(key) || path.Clean(key) != key || !fs.ValidPath(key) {
 		return false
 	}
 	parts := strings.Split(key, "/")
