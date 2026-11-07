@@ -6,7 +6,7 @@ The Go engine contains the Milestone 19 immutable artifact publisher, Milestone 
 
 - `cmd/api` starts the Go HTTP API with bounded timeouts and graceful shutdown.
 - `internal/auth` verifies the dashboard's HMAC request headers, enforces a five-minute timestamp window, and consumes one-time 192-bit nonces in PostgreSQL.
-- `internal/controlapi` creates projects and unique slugs, issues short-lived source ZIP PUT URLs, verifies finalized object sizes, and lists owner-scoped deployments.
+- `internal/controlapi` creates projects and unique slugs, issues short-lived size-bounded source ZIP POST policies, verifies finalized object sizes, and lists owner-scoped deployments.
 - `internal/objectstore/source.go` adds the private source-upload namespace and MinIO presigned PUT/stat operations.
 - `migrations/0002_control_plane.sql` adds project slugs, source upload metadata and replay-protection nonces.
 
@@ -41,7 +41,7 @@ Set encrypted dashboard secrets:
 
 The dashboard backend signs requests; the browser never receives this secret. Keep the Go API behind HTTPS and a network policy that only permits the trusted dashboard backend. Do not trust `X-Authenticated-User` from public clients.
 
-Configure S3/MinIO CORS to allow `PUT` from the dashboard origin with `Content-Type`. The bucket must remain private.
+Configure S3/MinIO CORS to allow `POST` from the dashboard origin with the `Content-Type` request header. The POST policy enforces the exact declared object size and `application/zip` type. The bucket must remain private.
 
 ## API
 
