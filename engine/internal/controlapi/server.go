@@ -27,7 +27,7 @@ var (
  controlChars = regexp.MustCompile("[\\x00-\\x1f\\x7f]")
 )
 type SourceStore interface {
- PresignSourceUpload(context.Context,string,time.Duration)(string,error)
+ PresignSourceUpload(context.Context,string,time.Duration,int64)(string,map[string]string,error)
  StatSource(context.Context,string)(int64,error)
  Ready(context.Context) error
 }
@@ -101,11 +101,11 @@ func (s *Server) createSourceUpload(w http.ResponseWriter,r *http.Request,projec
  if !exists {write(w,404,map[string]string{"error":"project not found"});return}
  uploadID,err:=newID();if err!=nil {write(w,500,map[string]string{"error":"could not generate upload identifier"});return}
  key:="sources/"+projectID+"/"+uploadID+"/source.zip"
- url,err:=s.objects.PresignSourceUpload(ctx,key,s.cfg.UploadTTL);if err!=nil {write(w,503,map[string]string{"error":"could not create a private upload URL"});return}
+ url,fields,err:=s.objects.PresignSourceUpload(ctx,key,s.cfg.UploadTTL,in.Size);if err!=nil {write(w,503,map[string]string{"error":"could not create a size-limited private upload form"});return}
  expires:=time.Now().UTC().Add(s.cfg.UploadTTL)
  _,err=s.db.ExecContext(ctx,"INSERT INTO source_uploads (id,project_id,owner_id,object_key,original_name,size_bytes,status,expires_at) VALUES ($1,$2,$3,$4,$5,$6,'pending',$7)",uploadID,projectID,owner,key,in.Name,in.Size,expires)
  if err!=nil {write(w,503,map[string]string{"error":"could not save source upload metadata"});return}
- write(w,201,map[string]any{"uploadUrl":url,"objectKey":key,"expiresAt":expires.Format(time.RFC3339),"headers":map[string]string{"Content-Type":"application/zip"}})
+ write(w,201,map[string]any{"uploadUrl":url,"objectKey":key,"expiresAt":expires.Format(time.RFC3339),"fields":fields})
 }
 func (s *Server) finalizeSourceUpload(w http.ResponseWriter,r *http.Request,projectID string){
  owner:=auth.UserID(r.Context());var in struct{ObjectKey string "json:\"objectKey\""}
