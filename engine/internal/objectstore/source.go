@@ -23,7 +23,7 @@ func (s *MinIOStore) PresignSourceUpload(ctx context.Context,key string,expires 
  if err:=policy.SetExpires(time.Now().UTC().Add(expires));err!=nil{return "",nil,err}
  if err:=policy.SetContentType("application/zip");err!=nil{return "",nil,err}
  if err:=policy.SetContentLengthRange(size,size);err!=nil{return "",nil,err}
- u,fields,err:=s.client.PresignedPostPolicy(ctx,*policy)
+ u,fields,err:=s.client.PresignedPostPolicy(ctx,policy)
  if err!=nil{return "",nil,fmt.Errorf("presign bounded source upload: %w",err)}
  return u.String(),fields,nil
 }
