@@ -2,17 +2,17 @@
 
 ## Scope
 
-This milestone introduces a repository-native Go package for publishing completed static build outputs as immutable deployment versions. It does not claim to run builds or serve sites.
+This milestone introduced a repository-native Go package for publishing completed static build outputs as immutable deployment versions. Milestone 20 now supplies the MinIO/S3 and PostgreSQL adapters.
 
 ## Publication sequence
 
 1. A trusted worker completes a build and stops all child processes.
 2. The worker gives the publisher an output directory that is no longer writable by the build process.
 3. The publisher walks the output, rejects symlinks and special files, blocks likely secret files, and enforces file-count and byte limits.
-4. Each regular file is SHA-256 hashed and assigned a deterministic MIME type and immutable object key under `sites/{project}/{deployment}/files/`.
-5. Files and `manifest.json` are uploaded to a private object bucket.
-6. A repository adapter atomically inserts the deployment and file metadata and updates the project's current deployment pointer.
-7. An upload error triggers best-effort deletion of objects already written. A database commit error retains objects because commit outcome can be ambiguous after a network failure; an orphan sweeper must query database references before deleting unreferenced objects. A periodic sweeper is also required for process crashes.
+4. Each regular file is SHA-256 hashed and assigned a deterministic MIME type and immutable object key under `sites/{project}/deployments/{deployment}/files/`.
+5. Files and `manifest.json` are uploaded to a pre-provisioned private S3-compatible bucket.
+6. The PostgreSQL adapter verifies project ownership and atomically inserts deployment/file metadata and updates the project's current deployment pointer.
+7. An upload error triggers best-effort deletion of objects already written. A database commit error retains objects because commit outcome can be ambiguous after a network failure; an orphan sweeper must query database references before deleting anything.
 
 ## Important invariants
 
@@ -26,10 +26,8 @@ This milestone introduces a repository-native Go package for publishing complete
 
 ## Remaining integration work
 
-- Implement the S3-compatible `ObjectStore` adapter with multipart upload and private ACL/bucket policy.
-- Implement the PostgreSQL `DeploymentRepository` transaction and owner check.
-- Call the publisher only after a sandboxed worker succeeds.
-- Add orphan cleanup and deployment retention jobs.
-- Implement a gateway that resolves current deployment metadata and prevents path traversal, open redirects and cross-project object access.
+- Connect the publisher to the trusted build worker after a sandboxed build succeeds.
+- Add a database-aware orphan sweeper and deployment retention jobs.
+- Implement the manifest-aware hosting gateway and prevent path traversal, open redirects and cross-project object access.
 - Add rollback API that changes the current deployment pointer transactionally.
-- Import the complete API/worker source package and reconcile it with this module before production deployment.
+- Import/reconcile the complete API and worker source tree before production deployment.
