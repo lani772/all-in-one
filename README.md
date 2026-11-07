@@ -1,17 +1,15 @@
 # All-in-One Hosting
 
-Self-hostable frontend hosting platform with a React + TypeScript dashboard and a separate Go control plane/build engine.
+Self-hostable frontend hosting platform with a React + TypeScript dashboard and a separate Go control plane.
 
-- `dashboard/` — AppDeploy React dashboard source and authenticated backend-for-frontend integration.
-- `engine/` — repository-native Go artifact pipeline, private MinIO/S3 adapter, PostgreSQL deployment repository and ordered migrations.
+- `dashboard/` — React + TypeScript + Vite dashboard and authenticated backend-for-frontend integration.
+- `engine/` — Go control API, HMAC authentication, PostgreSQL metadata, private MinIO/S3 source/artifact storage adapters, and immutable static artifact publication core.
 - `docs/` — milestone implementation notes and production acceptance requirements.
 
 Live dashboard: https://all-in-one-hosting-u3d98s.v2.appdeploy.ai/
 
-The dashboard backend signs Go API requests with HMAC-SHA256 using encrypted AppDeploy secrets. The browser never receives the HMAC key. Individual source files are packaged into ZIP in the browser and uploaded to private object storage using a presigned PUT URL.
-
 ## Current repository milestone
 
-Milestone 20 adds concrete MinIO/S3 and PostgreSQL adapters for the Milestone 19 immutable static-artifact publisher. The database adapter verifies project ownership and atomically writes deployment metadata while switching the active deployment pointer. A GitHub Actions workflow checks Go formatting, tests, race behavior and vetting.
+Milestone 21 adds the Go control API used by the dashboard's existing signed-engine routes. It creates projects and slugs, issues short-lived private ZIP upload URLs, verifies finalized source objects by exact byte count, and lists owner-scoped deployment metadata. HMAC timestamp and one-time nonce checks protect control-plane routes.
 
-**This repository still does not contain the complete Go API, Redis queue consumer, isolated build worker or public hosting gateway.** The adapters are not yet connected to a build job or HTTP route. Sandbox execution remains disabled by default. No live build or public deployment is claimed. Next.js SSR requires a separate runtime service.
+**Build execution remains disabled.** The API returns explicit HTTP 503 responses for build requests until a real Redis consumer and isolated Docker worker are connected. Source finalization is not archive inspection, and no public hosting deployment is claimed. Next.js SSR remains a separate future runtime.
