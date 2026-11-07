@@ -13,11 +13,19 @@ import (
 
 var sourceIDPattern=regexp.MustCompile("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
-func (s *MinIOStore) PresignSourceUpload(ctx context.Context,key string,expires time.Duration)(string,error){
- if s==nil||s.client==nil||!validSourceObjectKey(key){return "",errors.New("invalid source object key")}
- if expires<=0||expires>30*time.Minute{return "",errors.New("source upload URL expiry must be between 1 second and 30 minutes")}
- u,err:=s.client.PresignedPutObject(ctx,s.bucket,key,expires);if err!=nil{return "",fmt.Errorf("presign source upload: %w",err)}
- return u.String(),nil
+func (s *MinIOStore) PresignSourceUpload(ctx context.Context,key string,expires time.Duration,size int64)(string,map[string]string,error){
+ if s==nil||s.client==nil||!validSourceObjectKey(key){return "",nil,errors.New("invalid source object key")}
+ if expires<=0||expires>30*time.Minute{return "",nil,errors.New("source upload policy expiry must be between 1 second and 30 minutes")}
+ if size<1||size>100<<20{return "",nil,errors.New("source upload size is outside the allowed range")}
+ policy:=minio.NewPostPolicy()
+ if err:=policy.SetBucket(s.bucket);err!=nil{return "",nil,err}
+ if err:=policy.SetKey(key);err!=nil{return "",nil,err}
+ if err:=policy.SetExpires(time.Now().UTC().Add(expires));err!=nil{return "",nil,err}
+ if err:=policy.SetContentType("application/zip");err!=nil{return "",nil,err}
+ if err:=policy.SetContentLengthRange(size,size);err!=nil{return "",nil,err}
+ u,fields,err:=s.client.PresignedPostPolicy(ctx,*policy)
+ if err!=nil{return "",nil,fmt.Errorf("presign bounded source upload: %w",err)}
+ return u.String(),fields,nil
 }
 func (s *MinIOStore) StatSource(ctx context.Context,key string)(int64,error){
  if s==nil||s.client==nil||!validSourceObjectKey(key){return 0,errors.New("invalid source object key")}
