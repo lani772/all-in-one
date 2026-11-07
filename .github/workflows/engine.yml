@@ -30,8 +30,8 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: Type-check dashboard
         run: npx tsc --noEmit
-      - name: Build dashboard
-        run: npm run build
+      - name: Build dashboard with CI-only AppDeploy SDK stub
+        run: APPDEPLOY_CI_STUB=true npm run build
 
   test:
     runs-on: ubuntu-latest
