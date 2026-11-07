@@ -212,7 +212,10 @@ function App() {
         await api.post('/api/projects/' + encodeURIComponent(project.id) + '/engine-link', { engineProjectId: remoteProject.projectId, slug: remoteProject.slug });
         setNotice('Requesting a private source-upload URL…');
         const uploadInfo = (await api.post('/api/engine/projects/' + encodeURIComponent(remoteProject.projectId) + '/source-upload', { name: archive.name, size: archive.size })).data;
-        const putResponse = await fetch(uploadInfo.uploadUrl, { method: 'PUT', headers: { 'Content-Type': 'application/zip' }, body: archive });
+        const uploadForm = new FormData();
+        for (const [field, value] of Object.entries(uploadInfo.fields as Record<string, string>)) uploadForm.append(field, value);
+        uploadForm.append('file', archive, archive.name);
+        const putResponse = await fetch(uploadInfo.uploadUrl, { method: 'POST', body: uploadForm });
         if (!putResponse.ok) throw new Error('Private object storage rejected the ZIP upload (HTTP ' + putResponse.status + '). Check storage CORS and the presigned URL configuration.');
         await api.post('/api/engine/projects/' + encodeURIComponent(remoteProject.projectId) + '/source-finalize', { objectKey: uploadInfo.objectKey });
         await api.post('/api/projects/' + encodeURIComponent(project.id) + '/engine-state', { sourceUploaded: true, deploymentStatus: 'uploaded' });
