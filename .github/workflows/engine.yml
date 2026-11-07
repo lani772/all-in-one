@@ -2,7 +2,7 @@ name: Go engine
 
 on:
   push:
-    branches: [milestone-19-artifact-pipeline]
+    branches: [milestone-19-artifact-pipeline, milestone-21-control-api]
     paths:
       - "engine/**"
       - ".github/workflows/engine.yml"
