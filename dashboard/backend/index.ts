@@ -242,7 +242,13 @@ async function engineReadiness() {
       if (candidate.protocol === 'https:' && !candidate.username && !candidate.password && candidate.pathname === '/' && !candidate.search && !candidate.hash) publicBaseUrl = candidate.origin;
     }
     const checks = body.checks as Record<string, unknown> | undefined;
-    return { configured: true, ready: response.ok && body.status === 'ready', message: response.ok ? 'Go API and required infrastructure report ready.' : 'Go API is reachable but one or more dependencies are not ready.', buildExecution: checks?.buildExecution || 'unknown', publicBaseUrl };
+    const buildExecution = checks?.buildExecution || 'unknown';
+    const message = !response.ok
+      ? 'Go API is reachable but one or more dependencies are not ready.'
+      : buildExecution === 'not-connected'
+        ? 'Go API and storage are ready; isolated build execution is not connected yet.'
+        : 'Go API and required infrastructure report ready.';
+    return { configured: true, ready: response.ok && body.status === 'ready', message, buildExecution, publicBaseUrl };
   } catch { return { configured: true, ready: false, message: 'Could not reach the Go engine readiness endpoint.' }; }
 }
 
