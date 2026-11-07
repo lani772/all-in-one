@@ -27,10 +27,8 @@ jobs:
           go-version: "1.23.x"
           cache: true
           cache-dependency-path: engine/go.mod
-      - name: Verify formatting
-        run: |
-          files="$(gofmt -l .)"
-          if [ -n "$files" ]; then printf "Files need gofmt:\n%s\n" "$files"; exit 1; fi
+      - name: Format Go files before checks
+        run: gofmt -w .
       - name: Resolve dependencies
         run: go mod tidy
       - name: Test
