@@ -111,7 +111,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-type userIDLey struct{}
+type userIDKey struct{}
 
 func UserID(ctx context.Context) string {
 	value, _ := ctx.Value(userIDKey{}).(string)
