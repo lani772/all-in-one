@@ -5,6 +5,7 @@ on:
     branches: [milestone-19-artifact-pipeline, milestone-21-control-api]
     paths:
       - "engine/**"
+      - "dashboard/**"
       - ".github/workflows/engine.yml"
   pull_request:
     paths:
@@ -15,6 +16,23 @@ permissions:
   contents: read
 
 jobs:
+  dashboard-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install dashboard dependencies
+        run: npm install --no-audit --no-fund
+      - name: Type-check dashboard
+        run: npx tsc --noEmit
+      - name: Build dashboard
+        run: npm run build
+
   test:
     runs-on: ubuntu-latest
     defaults:
