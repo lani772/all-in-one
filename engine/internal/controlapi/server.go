@@ -47,11 +47,16 @@ func (s *Server) Health(w http.ResponseWriter,r *http.Request){
 func (s *Server) Ready(w http.ResponseWriter,r *http.Request){
  if r.Method!=http.MethodGet { write(w,405,map[string]string{"error":"method not allowed"});return }
  ctx,cancel:=context.WithTimeout(r.Context(),3*time.Second);defer cancel()
- checks:=map[string]string{"buildExecution":"not-connected"}
+ checks:=map[string]string{"buildExecution":"not-connected","worker":"not-connected"}
  if err:=s.db.PingContext(ctx);err!=nil {checks["database"]="error";write(w,503,map[string]any{"status":"not-ready","checks":checks});return}
  checks["database"]="ok"
  if err:=s.objects.Ready(ctx);err!=nil {checks["objectStorage"]="error";write(w,503,map[string]any{"status":"not-ready","checks":checks});return}
  checks["objectStorage"]="ok"
+ var workerReady bool
+ if err:=s.db.QueryRowContext(ctx,"SELECT EXISTS(SELECT 1 FROM engine_workers WHERE mode='inspection-only' AND last_seen_at > now() - interval '45 seconds')").Scan(&workerReady);err==nil && workerReady {
+  checks["worker"]="ok"
+  checks["buildExecution"]="inspection-only"
+ }
  write(w,200,map[string]any{"status":"ready","service":"all-in-one-hosting-engine","checks":checks})
 }
 func (s *Server) ServeHTTP(w http.ResponseWriter,r *http.Request){
@@ -62,15 +67,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter,r *http.Request){
   switch {
   case p[4]=="source-upload" && r.Method==http.MethodPost: s.createSourceUpload(w,r,p[3]);return
   case p[4]=="source-finalize" && r.Method==http.MethodPost: s.finalizeSourceUpload(w,r,p[3]);return
-  case p[4]=="builds" && r.Method==http.MethodPost: s.buildUnavailable(w);return
+  case p[4]=="builds" && r.Method==http.MethodPost: s.createBuild(w,r,p[3]);return
   case p[4]=="deployments" && r.Method==http.MethodGet: s.listDeployments(w,r,p[3]);return
   }
  }
- if len(p)==4 && p[0]=="api" && p[1]=="v1" && p[2]=="builds" && r.Method==http.MethodGet {
-  write(w,503,map[string]string{"code":"build_worker_unavailable","error":"Build status is unavailable because no build worker is connected."});return
+ if len(p)==4 && p[0]=="api" && p[1]=="v1" && p[2]=="builds" && idPattern.MatchString(p[3]) && r.Method==http.MethodGet {
+  s.getBuild(w,r,p[3]);return
  }
- if len(p)==5 && p[0]=="api" && p[1]=="v1" && p[2]=="builds" && p[4]=="cancel" && r.Method==http.MethodPost {
-  write(w,503,map[string]string{"code":"build_worker_unavailable","error":"Build cancellation is unavailable because no build worker is connected."});return
+ if len(p)==5 && p[0]=="api" && p[1]=="v1" && p[2]=="builds" && idPattern.MatchString(p[3]) && p[4]=="cancel" && r.Method==http.MethodPost {
+  s.cancelBuild(w,r,p[3]);return
  }
  write(w,404,map[string]string{"error":"route not found"})
 }
@@ -123,8 +128,53 @@ func (s *Server) finalizeSourceUpload(w http.ResponseWriter,r *http.Request,proj
  count,err:=result.RowsAffected();if err!=nil||count!=1 {write(w,409,map[string]string{"error":"source upload was already finalized or changed"});return}
  write(w,200,map[string]any{"uploaded":true,"objectKey":in.ObjectKey,"size":size})
 }
-func (s *Server) buildUnavailable(w http.ResponseWriter){
- write(w,503,map[string]string{"code":"build_worker_unavailable","error":"Source upload is complete, but no build worker or Redis job consumer is connected. No build was queued.","execution":"disabled"})
+func (s *Server) createBuild(w http.ResponseWriter,r *http.Request,projectID string){
+ owner:=auth.UserID(r.Context())
+ ctx,cancel:=context.WithTimeout(r.Context(),10*time.Second);defer cancel()
+ tx,err:=s.db.BeginTx(ctx,nil);if err!=nil {write(w,503,map[string]string{"error":"could not begin build job transaction"});return}
+ defer tx.Rollback()
+ var uploadID,sourceKey string
+ err=tx.QueryRowContext(ctx,"SELECT id,object_key FROM source_uploads WHERE project_id=$1 AND owner_id=$2 AND status='uploaded' ORDER BY uploaded_at DESC LIMIT 1 FOR UPDATE",projectID,owner).Scan(&uploadID,&sourceKey)
+ if errors.Is(err,sql.ErrNoRows) {write(w,409,map[string]string{"error":"upload and finalize a source ZIP before creating a build"});return}
+ if err!=nil {write(w,503,map[string]string{"error":"could not locate a finalized source upload"});return}
+ jobID,err:=newID();if err!=nil {write(w,500,map[string]string{"error":"could not generate build job identifier"});return}
+ _,err=tx.ExecContext(ctx,"INSERT INTO build_jobs (id,project_id,source_upload_id,owner_id,source_object_key,status) VALUES ($1,$2,$3,$4,$5,'queued')",jobID,projectID,uploadID,owner,sourceKey)
+ if err!=nil {write(w,503,map[string]string{"error":"could not create build job"});return}
+ _,err=tx.ExecContext(ctx,"INSERT INTO queue_outbox (job_id) VALUES ($1)",jobID)
+ if err!=nil {write(w,503,map[string]string{"error":"could not record build queue event"});return}
+ if err:=tx.Commit();err!=nil {write(w,503,map[string]string{"error":"could not commit build job"});return}
+ write(w,202,map[string]any{"jobId":jobID,"status":"queued","execution":"inspection-only","message":"The source ZIP is queued for secure extraction and framework inspection. Project build commands are not executed."})
+}
+
+func (s *Server) getBuild(w http.ResponseWriter,r *http.Request,jobID string){
+ owner:=auth.UserID(r.Context())
+ ctx,cancel:=context.WithTimeout(r.Context(),5*time.Second);defer cancel()
+ var status string
+ var inspection []byte
+ var message sql.NullString
+ var createdAt,updatedAt time.Time
+ err:=s.db.QueryRowContext(ctx,"SELECT status,inspection_result,error_message,created_at,updated_at FROM build_jobs WHERE id=$1 AND owner_id=$2",jobID,owner).Scan(&status,&inspection,&message,&createdAt,&updatedAt)
+ if errors.Is(err,sql.ErrNoRows) {write(w,404,map[string]string{"error":"build job not found"});return}
+ if err!=nil {write(w,503,map[string]string{"error":"could not read build job"});return}
+ var result any
+ if len(inspection)>0 { result=json.RawMessage(inspection) }
+ var errorText any
+ if message.Valid { errorText=message.String }
+ write(w,200,map[string]any{"jobId":jobID,"status":status,"execution":"inspection-only","inspection":result,"error":errorText,"createdAt":createdAt,"updatedAt":updatedAt})
+}
+
+func (s *Server) cancelBuild(w http.ResponseWriter,r *http.Request,jobID string){
+ owner:=auth.UserID(r.Context())
+ ctx,cancel:=context.WithTimeout(r.Context(),5*time.Second);defer cancel()
+ result,err:=s.db.ExecContext(ctx,"UPDATE build_jobs SET status='cancelled',updated_at=now(),finished_at=now() WHERE id=$1 AND owner_id=$2 AND status='queued'",jobID,owner)
+ if err!=nil {write(w,503,map[string]string{"error":"could not cancel build job"});return}
+ count,err:=result.RowsAffected();if err!=nil {write(w,503,map[string]string{"error":"could not confirm build cancellation"});return}
+ if count==1 {write(w,200,map[string]any{"jobId":jobID,"status":"cancelled"});return}
+ var status string
+ err=s.db.QueryRowContext(ctx,"SELECT status FROM build_jobs WHERE id=$1 AND owner_id=$2",jobID,owner).Scan(&status)
+ if errors.Is(err,sql.ErrNoRows) {write(w,404,map[string]string{"error":"build job not found"});return}
+ if err!=nil {write(w,503,map[string]string{"error":"could not read build job state"});return}
+ write(w,409,map[string]any{"error":"only queued jobs can be cancelled","status":status})
 }
 func (s *Server) listDeployments(w http.ResponseWriter,r *http.Request,projectID string){
  owner:=auth.UserID(r.Context());ctx,cancel:=context.WithTimeout(r.Context(),5*time.Second);defer cancel()

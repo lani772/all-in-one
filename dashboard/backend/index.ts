@@ -246,8 +246,10 @@ async function engineReadiness() {
     const message = !response.ok
       ? 'Go API is reachable but one or more dependencies are not ready.'
       : buildExecution === 'not-connected'
-        ? 'Go API and storage are ready; isolated build execution is not connected yet.'
-        : 'Go API and required infrastructure report ready.';
+        ? 'Go API and storage are ready; no inspection worker is connected yet.'
+        : buildExecution === 'inspection-only'
+          ? 'Go API, storage and ZIP inspection worker are ready; project build commands and publishing are still disabled.'
+          : 'Go API and required infrastructure report ready.';
     return { configured: true, ready: response.ok && body.status === 'ready', message, buildExecution, publicBaseUrl };
   } catch { return { configured: true, ready: false, message: 'Could not reach the Go engine readiness endpoint.' }; }
 }
