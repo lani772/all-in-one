@@ -2,7 +2,7 @@ name: Go engine
 
 on:
   push:
-    branches: [milestone-19-artifact-pipeline, milestone-21-control-api]
+    branches: [milestone-19-artifact-pipeline, milestone-21-control-api, milestone-22-redis-inspection-worker]
     paths:
       - "engine/**"
       - "dashboard/**"
@@ -55,3 +55,5 @@ jobs:
         run: go test -race ./...
       - name: Vet
         run: go vet ./...
+      - name: Build API and worker binaries
+        run: go build ./cmd/api ./cmd/worker

@@ -13,3 +13,8 @@ Live dashboard: https://all-in-one-hosting-u3d98s.v2.appdeploy.ai/
 Milestone 21 adds the Go control API used by the dashboard's existing signed-engine routes. It creates projects and slugs, issues short-lived private ZIP upload URLs, verifies finalized source objects by exact byte count, and lists owner-scoped deployment metadata. HMAC timestamp and one-time nonce checks protect control-plane routes.
 
 **Build execution remains disabled.** The API returns explicit HTTP 503 responses for build requests until a real Redis consumer and isolated Docker worker are connected. Source finalization is not archive inspection, and no public hosting deployment is claimed. Next.js SSR remains a separate future runtime.
+
+
+## Milestone 22
+
+The Go control plane now creates PostgreSQL-backed build jobs through a transactional outbox, and a separate Redis Streams worker securely extracts and inspects uploaded ZIPs. This is inspection-only: it does not install dependencies, execute user scripts, produce artifacts or publish a website. See [Milestone 22 documentation](docs/milestone-22-redis-inspection-worker.md).
