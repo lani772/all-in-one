@@ -29,6 +29,8 @@ var (
 type SourceStore interface {
  PresignSourceUpload(context.Context,string,time.Duration,int64)(string,map[string]string,error)
  StatSource(context.Context,string)(int64,error)
+ SealSource(context.Context,string,string,int64)(string,error)
+ DeleteSource(context.Context,string) error
  Ready(context.Context) error
 }
 type Config struct { MaxSourceBytes int64; UploadTTL time.Duration }
@@ -66,6 +68,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter,r *http.Request){
   case p[4]=="deployments" && r.Method==http.MethodGet: s.listDeployments(w,r,p[3]);return
   }
  }
+ if len(p)==4 && p[0]=="api" && p[1]=="v1" && p[2]=="inspection-jobs" && idPattern.MatchString(p[3]) && r.Method==http.MethodGet { s.getInspectionJob(w,r,p[3]);return }
  if len(p)==4 && p[0]=="api" && p[1]=="v1" && p[2]=="builds" && r.Method==http.MethodGet {
   write(w,503,map[string]string{"code":"build_worker_unavailable","error":"Build status is unavailable because no build worker is connected."});return
  }
@@ -108,21 +111,76 @@ func (s *Server) createSourceUpload(w http.ResponseWriter,r *http.Request,projec
  write(w,201,map[string]any{"uploadUrl":url,"objectKey":key,"expiresAt":expires.Format(time.RFC3339),"fields":fields})
 }
 func (s *Server) finalizeSourceUpload(w http.ResponseWriter,r *http.Request,projectID string){
- owner:=auth.UserID(r.Context());var in struct{ObjectKey string "json:\"objectKey\""}
- if err:=decode(r,&in);err!=nil {write(w,400,map[string]string{"error":err.Error()});return}
- if !validSourceKey(in.ObjectKey,projectID) {write(w,400,map[string]string{"error":"invalid source object key"});return}
- ctx,cancel:=context.WithTimeout(r.Context(),10*time.Second);defer cancel()
- var uploadID string;var expected int64
- err:=s.db.QueryRowContext(ctx,"SELECT id,size_bytes FROM source_uploads WHERE project_id=$1 AND owner_id=$2 AND object_key=$3 AND status='pending' AND expires_at>now()",projectID,owner,in.ObjectKey).Scan(&uploadID,&expected)
- if errors.Is(err,sql.ErrNoRows) {write(w,404,map[string]string{"error":"pending source upload not found or expired"});return}
- if err!=nil {write(w,503,map[string]string{"error":"could not load source upload metadata"});return}
- size,err:=s.objects.StatSource(ctx,in.ObjectKey);if err!=nil {write(w,409,map[string]string{"error":"uploaded source object is not present yet"});return}
- if size!=expected {_,_=s.db.ExecContext(ctx,"UPDATE source_uploads SET status='failed' WHERE id=$1 AND owner_id=$2",uploadID,owner);write(w,409,map[string]string{"error":"uploaded object size does not match the declared source size"});return}
- result,err:=s.db.ExecContext(ctx,"UPDATE source_uploads SET status='uploaded',uploaded_at=now() WHERE id=$1 AND owner_id=$2 AND status='pending'",uploadID,owner)
- if err!=nil {write(w,503,map[string]string{"error":"could not finalize source upload"});return}
- count,err:=result.RowsAffected();if err!=nil||count!=1 {write(w,409,map[string]string{"error":"source upload was already finalized or changed"});return}
- write(w,200,map[string]any{"uploaded":true,"objectKey":in.ObjectKey,"size":size})
+ owner:=auth.UserID(r.Context());var in struct{ObjectKey string `json:"objectKey"`}
+ if err:=decode(r,&in);err!=nil{write(w,400,map[string]string{"error":err.Error()});return}
+ if !validSourceKey(in.ObjectKey,projectID){write(w,400,map[string]string{"error":"invalid source object key"});return}
+ ctx,cancel:=context.WithTimeout(r.Context(),30*time.Second);defer cancel()
+ tx,err:=s.db.BeginTx(ctx,&sql.TxOptions{Isolation:sql.LevelSerializable})
+ if err!=nil{write(w,503,map[string]string{"error":"could not begin source finalization"});return}
+ defer tx.Rollback()
+ var uploadID,status string
+ var expected int64
+ var sealedKey,sourceHash sql.NullString
+ err=tx.QueryRowContext(ctx,`SELECT id,status,size_bytes,sealed_object_key,sha256 FROM source_uploads
+ WHERE project_id=$1 AND owner_id=$2 AND object_key=$3 AND expires_at>now() FOR UPDATE`,
+ projectID,owner,in.ObjectKey).Scan(&uploadID,&status,&expected,&sealedKey,&sourceHash)
+ if errors.Is(err,sql.ErrNoRows){write(w,404,map[string]string{"error":"pending source upload not found or expired"});return}
+ if err!=nil{write(w,503,map[string]string{"error":"could not lock source upload"});return}
+ if status=="sealed"||status=="inspecting"||status=="inspected"{
+  var jobID,jobStatus string
+  jobErr:=tx.QueryRowContext(ctx,`SELECT id,status FROM inspection_jobs WHERE upload_id=$1`,uploadID).Scan(&jobID,&jobStatus)
+  if jobErr==nil{
+   if err:=tx.Commit();err!=nil{write(w,503,map[string]string{"error":"could not confirm existing inspection job"});return}
+   write(w,202,map[string]any{"uploaded":true,"objectKey":sealedKey.String,"sha256":sourceHash.String,"inspectionJobId":jobID,"status":jobStatus});return
+  }
+  write(w,409,map[string]string{"error":"inspection job metadata is missing"});return
+ }
+ if status!="pending"&&status!="uploaded"{write(w,409,map[string]string{"error":"source upload cannot be finalized from its current state"});return}
+ size,err:=s.objects.StatSource(ctx,in.ObjectKey)
+ if err!=nil{write(w,409,map[string]string{"error":"uploaded source object is not present yet"});return}
+ if size!=expected{
+  _,_=tx.ExecContext(ctx,`UPDATE source_uploads SET status='failed' WHERE id=$1 AND owner_id=$2`,uploadID,owner)
+  _=tx.Commit()
+  write(w,409,map[string]string{"error":"uploaded object size does not match the declared source size"});return
+ }
+ immutableKey:="sealed-sources/"+projectID+"/"+uploadID+"/source.zip"
+ digest,err:=s.objects.SealSource(ctx,in.ObjectKey,immutableKey,expected)
+ if err!=nil{write(w,409,map[string]string{"error":"could not seal the uploaded source object"});return}
+ jobID,err:=newID()
+ if err!=nil{_=s.objects.DeleteSource(ctx,immutableKey);write(w,500,map[string]string{"error":"could not generate inspection job identifier"});return}
+ if _,err=tx.ExecContext(ctx,`UPDATE source_uploads SET status='sealed',sealed_object_key=$2,sha256=$3,uploaded_at=now()
+ WHERE id=$1 AND owner_id=$4 AND status IN ('pending','uploaded')`,uploadID,immutableKey,digest,owner);err!=nil{
+  _=s.objects.DeleteSource(ctx,immutableKey);write(w,503,map[string]string{"error":"could not persist sealed source metadata"});return
+ }
+ if _,err=tx.ExecContext(ctx,`INSERT INTO inspection_jobs
+ (id,project_id,upload_id,owner_id,source_object_key,source_sha256,source_size_bytes,status)
+ VALUES ($1,$2,$3,$4,$5,$6,$7,'queued')`,jobID,projectID,uploadID,owner,immutableKey,digest,expected);err!=nil{
+  _=s.objects.DeleteSource(ctx,immutableKey);write(w,503,map[string]string{"error":"could not create inspection job"});return
+ }
+ payload,_:=json.Marshal(map[string]string{"jobId":jobID})
+ if _,err=tx.ExecContext(ctx,`INSERT INTO job_outbox(job_id,event_type,payload) VALUES($1,'inspection.requested',$2::jsonb)`,jobID,string(payload));err!=nil{
+  _=s.objects.DeleteSource(ctx,immutableKey);write(w,503,map[string]string{"error":"could not queue source inspection"});return
+ }
+ if err=tx.Commit();err!=nil{
+  // COMMIT can be ambiguous; retain the sealed object for reconciliation.
+  write(w,503,map[string]string{"error":"source finalization commit was not confirmed; retry safely"});return
+ }
+ // The immutable copy is authoritative; a still-valid form can only affect the old key.
+ _=s.objects.DeleteSource(context.WithoutCancel(ctx),in.ObjectKey)
+ write(w,202,map[string]any{"uploaded":true,"objectKey":immutableKey,"size":size,"sha256":digest,"inspectionJobId":jobID,"status":"queued"})
 }
+
+func (s *Server) getInspectionJob(w http.ResponseWriter,r *http.Request,jobID string){
+ owner:=auth.UserID(r.Context());ctx,cancel:=context.WithTimeout(r.Context(),5*time.Second);defer cancel()
+ var status,logText string;var attempts int;var result []byte;var createdAt,updatedAt time.Time
+ err:=s.db.QueryRowContext(ctx,`SELECT status,attempts,log_text,result,created_at,updated_at FROM inspection_jobs WHERE id=$1 AND owner_id=$2`,jobID,owner).
+ Scan(&status,&attempts,&logText,&result,&createdAt,&updatedAt)
+ if errors.Is(err,sql.ErrNoRows){write(w,404,map[string]string{"error":"inspection job not found"});return}
+ if err!=nil{write(w,503,map[string]string{"error":"could not load inspection job"});return}
+ var parsed any;if len(result)>0{parsed=json.RawMessage(result)}
+ write(w,200,map[string]any{"id":jobID,"status":status,"attempts":attempts,"log":logText,"result":parsed,"createdAt":createdAt,"updatedAt":updatedAt})
+}
+
 func (s *Server) buildUnavailable(w http.ResponseWriter){
  write(w,503,map[string]string{"code":"build_worker_unavailable","error":"Source upload is complete, but no build worker or Redis job consumer is connected. No build was queued.","execution":"disabled"})
 }

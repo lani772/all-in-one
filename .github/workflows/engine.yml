@@ -33,6 +33,13 @@ jobs:
       - name: Build dashboard with CI-only AppDeploy SDK stub
         run: APPDEPLOY_CI_STUB=true npm run build
 
+  worker-container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build inspection worker image
+        run: docker build -f engine/Dockerfile.worker -t allinone-hosting-worker:ci engine
+
   test:
     runs-on: ubuntu-latest
     defaults:

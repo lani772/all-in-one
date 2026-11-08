@@ -34,6 +34,8 @@ type ProjectRecord = {
   sourceUploaded?: boolean;
   deploymentStatus?: string;
   buildJobId?: string;
+  inspectionJobId?: string;
+  inspectionStatus?: string;
   deploymentId?: string;
 };
 
@@ -192,6 +194,8 @@ function publicProject(id: string, record: ProjectRecord) {
     sourceUploaded: record.sourceUploaded || false,
     deploymentStatus: record.deploymentStatus || null,
     buildJobId: record.buildJobId || null,
+    inspectionJobId: record.inspectionJobId || null,
+    inspectionStatus: record.inspectionStatus || null,
     deploymentId: record.deploymentId || null
   };
 }
@@ -272,6 +276,10 @@ export const handler = router({
     try { return engineResponse(await signedEngineRequest(user!.userId, 'POST', '/api/v1/projects/' + encodeURIComponent(params.projectId) + '/builds', {})); }
     catch (err) { return error(err instanceof Error ? err.message : 'Could not queue the build.', 503); }
   }],
+  'GET /api/engine/inspection-jobs/:jobId': [requireAuth(), async ({ user, params }) => {
+    try { return engineResponse(await signedEngineRequest(user!.userId, 'GET', '/api/v1/inspection-jobs/' + encodeURIComponent(params.jobId))); }
+    catch (err) { return error(err instanceof Error ? err.message : 'Could not read inspection status.', 503); }
+  }],
   'GET /api/engine/builds/:jobId': [requireAuth(), async ({ user, params }) => {
     try { return engineResponse(await signedEngineRequest(user!.userId, 'GET', '/api/v1/builds/' + encodeURIComponent(params.jobId))); }
     catch (err) { return error(err instanceof Error ? err.message : 'Could not read build status.', 503); }
@@ -293,13 +301,15 @@ export const handler = router({
     return json({ linked: true, projectId: params.id, engineProjectId: payload.engineProjectId, slug: payload.slug });
   }],
   'POST /api/projects/:id/engine-state': [requireAuth(), async ({ user, params, body }) => {
-    const payload = body as { sourceUploaded?: unknown; deploymentStatus?: unknown; buildJobId?: unknown; deploymentId?: unknown };
+    const payload = body as { sourceUploaded?: unknown; deploymentStatus?: unknown; buildJobId?: unknown; inspectionJobId?: unknown; inspectionStatus?: unknown; deploymentId?: unknown };
     const table = tableFor(user!.userId); const [record] = await db.get<ProjectRecord>(table, [params.id]);
     if (!record || record.ownerId !== user!.userId) return error('Project draft not found.', 404);
     const patch: Record<string, unknown> = {};
     if (typeof payload?.sourceUploaded === 'boolean') { patch.sourceUploaded = payload.sourceUploaded; if (payload.sourceUploaded) patch.files = record.files.map(file => ({ ...file, uploaded: true })); }
     if (typeof payload?.deploymentStatus === 'string' && payload.deploymentStatus.length <= 40) patch.deploymentStatus = payload.deploymentStatus;
     if (typeof payload?.buildJobId === 'string' && payload.buildJobId.length <= 100) patch.buildJobId = payload.buildJobId;
+    if (typeof payload?.inspectionJobId === 'string' && payload.inspectionJobId.length <= 100) patch.inspectionJobId = payload.inspectionJobId;
+    if (typeof payload?.inspectionStatus === 'string' && payload.inspectionStatus.length <= 40) patch.inspectionStatus = payload.inspectionStatus;
     if (typeof payload?.deploymentId === 'string' && payload.deploymentId.length <= 100) patch.deploymentId = payload.deploymentId;
     if (!Object.keys(patch).length) return error('No valid engine state fields were supplied.', 400);
     const [updated] = await db.tx.update(table, [{ id: params.id, record: patch }], { patch: true });
