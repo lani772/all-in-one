@@ -53,7 +53,7 @@ func (s *Server) Ready(w http.ResponseWriter,r *http.Request){
  if err:=s.objects.Ready(ctx);err!=nil {checks["objectStorage"]="error";write(w,503,map[string]any{"status":"not-ready","checks":checks});return}
  checks["objectStorage"]="ok"
  var workerReady bool
- if err:=s.db.QueryRowContext(ctx,"SELECT EXISTS(SELECT 1 FROM engine_workers WHERE last_seen_at > now() - interval '45 seconds')").Scan(&workerReady);err==nil && workerReady {
+ if err:=s.db.QueryRowContext(ctx,"SELECT EXISTS(SELECT 1 FROM engine_workers WHERE mode='inspection-only' AND last_seen_at > now() - interval '45 seconds')").Scan(&workerReady);err==nil && workerReady {
   checks["worker"]="ok"
   checks["buildExecution"]="inspection-only"
  }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -22,6 +23,8 @@ type Job struct {
 
 type Queue struct {
 	client *redis.Client
+	claimMu sync.Mutex
+	claimCursor string
 }
 
 func New(addr, password string, db int) (*Queue, error) {
@@ -96,13 +99,18 @@ func (q *Queue) ClaimStale(ctx context.Context, consumer string, minIdle time.Du
 	if count < 1 {
 		count = 1
 	}
-	messages, _, err := q.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+	q.claimMu.Lock()
+	defer q.claimMu.Unlock()
+	start := q.claimCursor
+	if start == "" { start = "0-0" }
+	messages, next, err := q.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
 		Stream: streamName, Group: groupName, Consumer: consumer,
-		MinIdle: minIdle, Start: "0-0", Count: count,
+		MinIdle: minIdle, Start: start, Count: count,
 	}).Result()
 	if err != nil {
 		return nil, err
 	}
+	if next == "0-0" { q.claimCursor = "" } else { q.claimCursor = next }
 	return collect([]redis.XStream{{Stream: streamName, Messages: messages}}), nil
 }
 

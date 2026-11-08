@@ -72,7 +72,7 @@ A full build requires the Go module dependencies to be downloadable. The local a
 - The separate worker dispatches outbox rows to a Redis Stream consumer group. Duplicate stream entries are safe because jobs are conditionally claimed in PostgreSQL.
 - The worker downloads the private ZIP, applies extraction limits, rejects traversal and symlinks, and inspects package metadata without executing tenant code.
 - `GET /api/v1/builds/{id}` returns owner-scoped status. Queued jobs can be cancelled; active inspection cannot yet be cancelled.
-- Worker heartbeats report `buildExecution: inspection-only` in readiness.
+- Worker heartbeats report `buildExecution: inspection-only` only while PostgreSQL, Redis and S3 are reachable; otherwise the worker is marked unhealthy.
 
 Apply the new migration after 0000-0002:
 

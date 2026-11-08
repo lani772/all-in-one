@@ -124,10 +124,31 @@ func (w *Worker) fail(ctx context.Context, jobID string, cause error) error {
 }
 
 func (w *Worker) heartbeat(ctx context.Context) {
-	ticker:=time.NewTicker(10*time.Second); defer ticker.Stop()
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
 	for {
-		_,err:=w.db.ExecContext(ctx,`INSERT INTO engine_workers(worker_id,mode,last_seen_at) VALUES($1,'inspection-only',now()) ON CONFLICT(worker_id) DO UPDATE SET mode=EXCLUDED.mode,last_seen_at=now()`,w.cfg.WorkerID)
-		if err!=nil && ctx.Err()==nil { log.Printf("worker heartbeat: %v",err) }
-		select { case <-ctx.Done(): return; case <-ticker.C: }
+		checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		mode := "inspection-only"
+		if err := w.queue.Ping(checkCtx); err != nil {
+			mode = "unhealthy"
+		}
+		if mode == "inspection-only" {
+			if err := w.objects.Ready(checkCtx); err != nil {
+				mode = "unhealthy"
+			}
+		}
+		_, err := w.db.ExecContext(checkCtx,
+			`INSERT INTO engine_workers(worker_id,mode,last_seen_at) VALUES($1,$2,now()) ON CONFLICT(worker_id) DO UPDATE SET mode=EXCLUDED.mode,last_seen_at=now()`,
+			w.cfg.WorkerID, mode,
+		)
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			log.Printf("worker heartbeat: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }

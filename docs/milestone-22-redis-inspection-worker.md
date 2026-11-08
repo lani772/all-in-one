@@ -7,7 +7,7 @@
 3. Redis delivery is at-least-once. The worker conditionally claims jobs in PostgreSQL, making duplicate stream entries harmless.
 4. The worker downloads the private source ZIP, safely extracts it, and inspects `package.json`, framework dependencies, lockfiles, scripts and entrypoints.
 5. Job state and inspection results are persisted in PostgreSQL. The dashboard can poll status and cancel queued jobs.
-6. Worker heartbeats cause `/readyz` to report `buildExecution: inspection-only` while a worker is active.
+6. Worker heartbeats cause `/readyz` to report `buildExecution: inspection-only` only while PostgreSQL, Redis and S3 are reachable; an unhealthy worker is not reported as ready.
 
 ## API changes
 
