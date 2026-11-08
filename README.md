@@ -1,17 +1,15 @@
 # All-in-One Hosting
 
-Self-hostable frontend hosting platform with a React + TypeScript dashboard and a separate Go control plane/build engine.
+Self-hostable frontend hosting platform with a React + TypeScript + Vite dashboard and a separate Go control plane.
 
-- `dashboard/` — AppDeploy React dashboard source and authenticated backend-for-frontend integration.
-- `engine/` — repository-native Go artifact pipeline, private MinIO/S3 adapter, PostgreSQL deployment repository and ordered migrations.
+- `dashboard/` — React + TypeScript + Vite dashboard and authenticated backend-for-frontend integration.
+- `engine/` — Go API, PostgreSQL metadata, Redis Streams inspection worker, private MinIO/S3 source/artifact storage, and immutable static artifact publisher.
 - `docs/` — milestone implementation notes and production acceptance requirements.
 
 Live dashboard: https://all-in-one-hosting-u3d98s.v2.appdeploy.ai/
 
-The dashboard backend signs Go API requests with HMAC-SHA256 using encrypted AppDeploy secrets. The browser never receives the HMAC key. Individual source files are packaged into ZIP in the browser and uploaded to private object storage using a presigned PUT URL.
-
 ## Current repository milestone
 
-Milestone 20 adds concrete MinIO/S3 and PostgreSQL adapters for the Milestone 19 immutable static-artifact publisher. The database adapter verifies project ownership and atomically writes deployment metadata while switching the active deployment pointer. A GitHub Actions workflow checks Go formatting, tests, race behavior and vetting.
+Milestone 22 adds a sealed-source lifecycle and asynchronous inspection pipeline. Finalized uploads are copied to a server-owned object key and hashed. A PostgreSQL transactional outbox feeds Redis Streams; a separate worker safely extracts ZIPs, detects framework/package metadata, and stores owner-scoped status and logs.
 
-**This repository still does not contain the complete Go API, Redis queue consumer, isolated build worker or public hosting gateway.** The adapters are not yet connected to a build job or HTTP route. Sandbox execution remains disabled by default. No live build or public deployment is claimed. Next.js SSR requires a separate runtime service.
+**Inspection is not a deployment build.** No customer code or package scripts are executed. Build creation remains disabled until the dedicated isolated Docker builder, dependency cache/egress policy, build logs, artifact publication and public gateway are completed and verified. Next.js SSR remains a separate runtime service.

@@ -1,47 +1,68 @@
-# Go hosting engine source
+# All-in-One Hosting — Go control API and inspection worker
 
-This directory contains the repository-native static artifact pipeline.
+The engine contains the immutable static artifact publisher, PostgreSQL/S3 adapters, authenticated control API, and Redis Streams inspection worker.
 
-## Milestone 19 — artifact publication core
+## Milestone 22 — sealed uploads and asynchronous source inspection
 
-`internal/artifact` creates deterministic manifests for completed static build outputs, rejects symlinks and non-regular files, blocks common secret files, enforces file-count and byte limits, hashes files with SHA-256, and uploads under immutable deployment-specific object keys.
+- Finalized uploads are copied from the presigned `sources/` namespace into the service-owned `sealed-sources/` namespace. The browser never receives a write policy for sealed objects.
+- The API hashes the sealed copy, then atomically records its immutable key, source digest, inspection job and transactional outbox event in PostgreSQL.
+- A separate worker dispatches outbox events to Redis Streams and consumes them through a consumer group. Duplicate messages are safe; abandoned pending messages are reclaimed after five minutes.
+- The worker downloads the sealed ZIP, verifies SHA-256 and byte count, extracts with traversal/type/size/compression-ratio checks, and inspects framework/package metadata.
+- Inspection status, result and logs are stored in PostgreSQL and are visible only to the authenticated owner.
+- No customer JavaScript, package lifecycle scripts, build commands or network requests are executed.
 
-## Milestone 20 — production storage and database adapters
+## Apply migrations
 
-- `internal/objectstore` implements the private S3-compatible object store using MinIO's Go SDK. It validates deployment-scoped object keys, requires an already provisioned bucket, and never changes bucket ACL or policy.
-- `internal/deployment` implements the PostgreSQL repository using pgx through `database/sql`. It locks the project row, verifies ownership, inserts the deployment and file rows, supersedes the prior ready deployment, and switches the current deployment pointer in one serializable transaction.
-- `migrations/0000_projects.sql` creates the Go engine's dedicated projects table. Apply it before `0001_deployments.sql`.
-
-### Configure
-
-Copy `.env.example` to `.env` and supply production credentials through a secret manager. Do not commit `.env`, credentials, or tenant build secrets.
-
-Provision the bucket as private before starting the service. For a local MinIO instance, for example:
-
-```bash
-mc mb --ignore-existing local/hosting-artifacts
-mc anonymous set none local/hosting-artifacts
-```
-
-Run migrations in order against the dedicated engine database:
+Apply these in order to the dedicated engine database:
 
 ```bash
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0000_projects.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0001_deployments.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0002_control_plane.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0003_source_inspection.sql
 ```
 
-Then verify the module:
+## Configure and run
+
+Requirements: Go 1.23+, PostgreSQL, Redis 7 (Streams and XAUTOCLAIM), and a private S3-compatible bucket.
+
+Set variables in `.env` based on `.env.example`. Run API and worker separately:
 
 ```bash
 go mod tidy
-gofmt -w internal
+go run ./cmd/api
+go run ./cmd/worker
+```
+
+Build images:
+
+```bash
+docker build -f Dockerfile.api -t allinone-hosting-api:local .
+docker build -f Dockerfile.worker -t allinone-hosting-worker:local .
+```
+
+The API remains behind HTTPS and a private network policy. Configure S3/MinIO CORS to allow POST from the dashboard origin with Content-Type. Keep the bucket private. Grant the browser access only through the short-lived, size-bounded POST policy; never expose S3 credentials.
+
+## API additions
+
+- `POST /api/v1/projects/{id}/source-finalize` copies the upload to the sealed namespace, computes SHA-256, creates an inspection job and returns HTTP 202 with `inspectionJobId`.
+- `GET /api/v1/inspection-jobs/{id}` returns owner-scoped inspection status, attempts, logs and framework metadata.
+- Build creation/status/cancellation still return HTTP 503. Inspection is not a deployment build.
+
+## Worker limits
+
+Defaults: 20 MiB compressed source, 10,000 ZIP entries, 100 MiB per expanded file, 512 MiB total expanded bytes, compression ratio 200:1 and five-minute inspection timeout. Tune conservatively for the worker host.
+
+The worker does not execute source code. It should run with a read-only root filesystem, restricted temporary storage, no Docker socket and no build credentials. The S3 identity used by the worker should be read-only for sealed sources.
+
+## Tests
+
+```bash
+gofmt -w cmd internal
+go mod tidy
 go test ./...
 go test -race ./...
 go vet ./...
 ```
 
-### Integration boundary
-
-The adapters are not yet wired into a public HTTP route or build worker. The caller must derive `ownerID` from verified authentication, never from a client-supplied header. Publish only a completed, immutable output directory after the build process has stopped. Do not expose the S3 bucket publicly. The hosting gateway must resolve a project slug to its current deployment and serve only manifest-listed keys. Next.js SSR requires a separate runtime service and is not handled by this static artifact store.
-
-The database transaction serializes publishes per project through `SELECT ... FOR UPDATE`. If COMMIT returns a network error, the publisher must retain uploaded objects and let reconciliation inspect database references before cleanup; deleting them immediately could break a successfully committed deployment.
+Live PostgreSQL, Redis and MinIO integration still requires a provisioned environment. The CI workflow runs Go tests and builds the worker container but does not claim a production deployment.

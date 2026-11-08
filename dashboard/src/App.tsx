@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, auth } from '@appdeploy/client';
 import {
   Activity,
-  ArrowDownToLine,
   ArrowRight,
   Bell,
   Box,
@@ -11,8 +10,6 @@ import {
   CircleHelp,
   Cloud,
   Code2,
-  Command,
-  FileArchive,
   FileCode2,
   FileUp,
   FolderGit2,
@@ -64,7 +61,7 @@ type Project = {
   createdAt: string;
   uploadedCount?: number;
   uploadedBytes?: number;
-  engineProjectId?: string; slug?: string; sourceUploaded?: boolean; deploymentStatus?: string; buildJobId?: string; deploymentId?: string;
+  engineProjectId?: string; slug?: string; sourceUploaded?: boolean; deploymentStatus?: string; buildJobId?: string; inspectionJobId?: string; inspectionStatus?: string; deploymentId?: string;
 };
 type EngineStatus = { configured: boolean; ready: boolean; message?: string; buildExecution?: string; publicBaseUrl?: string | null };
 
@@ -109,7 +106,9 @@ async function makeProjectArchive(selected: SelectedFile[], projectName: string)
     const ch = new Uint8Array(46 + name.length), cv = new DataView(ch.buffer); cv.setUint32(0,0x02014b50,true); cv.setUint16(4,20,true); cv.setUint16(6,20,true); cv.setUint16(8,0x0800,true); cv.setUint16(10,0,true); cv.setUint16(12,0,true); cv.setUint16(14,0x21,true); cv.setUint32(16,crc,true); cv.setUint32(20,data.length,true); cv.setUint32(24,data.length,true); cv.setUint16(28,name.length,true); cv.setUint16(30,0,true); cv.setUint16(32,0,true); cv.setUint16(34,0,true); cv.setUint16(36,0,true); cv.setUint32(38,0,true); cv.setUint32(42,offset,true); ch.set(name,46); central.push(ch); offset += lh.length + data.length;
   }
   const csize = central.reduce((n,x)=>n+x.length,0), end = new Uint8Array(22), ev = new DataView(end.buffer); ev.setUint32(0,0x06054b50,true); ev.setUint16(4,0,true); ev.setUint16(6,0,true); ev.setUint16(8,selected.length,true); ev.setUint16(10,selected.length,true); ev.setUint32(12,csize,true); ev.setUint32(16,offset,true); ev.setUint16(20,0,true);
-  const name = (projectName.trim() || 'project').replace(/[^A-Za-z0-9_-]/g,'-'); return new File([...local,...central,end],name+'.zip',{type:'application/zip'});
+  const name = (projectName.trim() || 'project').replace(/[^A-Za-z0-9_-]/g,'-');
+  const parts: BlobPart[] = [...local, ...central, end].map(part => { const copy = new Uint8Array(part.byteLength); copy.set(part); return copy.buffer; });
+  return new File(parts,name+'.zip',{type:'application/zip'});
 }
 
 function App() {
@@ -212,15 +211,15 @@ function App() {
         await api.post('/api/projects/' + encodeURIComponent(project.id) + '/engine-link', { engineProjectId: remoteProject.projectId, slug: remoteProject.slug });
         setNotice('Requesting a private source-upload URL…');
         const uploadInfo = (await api.post('/api/engine/projects/' + encodeURIComponent(remoteProject.projectId) + '/source-upload', { name: archive.name, size: archive.size })).data;
-        const putResponse = await fetch(uploadInfo.uploadUrl, { method: 'PUT', headers: { 'Content-Type': 'application/zip' }, body: archive });
+        const uploadForm = new FormData();
+        for (const [field, value] of Object.entries(uploadInfo.fields as Record<string, string>)) uploadForm.append(field, value);
+        uploadForm.append('file', archive, archive.name);
+        const putResponse = await fetch(uploadInfo.uploadUrl, { method: 'POST', body: uploadForm });
         if (!putResponse.ok) throw new Error('Private object storage rejected the ZIP upload (HTTP ' + putResponse.status + '). Check storage CORS and the presigned URL configuration.');
-        await api.post('/api/engine/projects/' + encodeURIComponent(remoteProject.projectId) + '/source-finalize', { objectKey: uploadInfo.objectKey });
-        await api.post('/api/projects/' + encodeURIComponent(project.id) + '/engine-state', { sourceUploaded: true, deploymentStatus: 'uploaded' });
-        setNotice('Source archive verified. Creating the build job…');
-        const build = (await api.post('/api/engine/projects/' + encodeURIComponent(remoteProject.projectId) + '/builds', {})).data;
-        await api.post('/api/projects/' + encodeURIComponent(project.id) + '/engine-state', { sourceUploaded: true, buildJobId: build.jobId, deploymentStatus: build.status });
+        const inspection = (await api.post('/api/engine/projects/' + encodeURIComponent(remoteProject.projectId) + '/source-finalize', { objectKey: uploadInfo.objectKey })).data;
+        await api.post('/api/projects/' + encodeURIComponent(project.id) + '/engine-state', { sourceUploaded: true, inspectionJobId: inspection.inspectionJobId, inspectionStatus: inspection.status || 'queued', deploymentStatus: 'uploaded' });
         const refreshed = await api.get('/api/projects'); setProjects(refreshed.data.projects ?? []); setFiles([]); setProjectName(''); setView('Projects');
-        setNotice(build.execution === 'inspection-only' ? 'Source uploaded and verified. The job is queued for inspection only; isolated build execution is disabled on the Go engine.' : 'Source uploaded and verified. Build job queued successfully.'); return;
+        setNotice('Source sealed and queued for secure inspection. No build has been started.'); return;
       }
       setNotice('Project created. Uploading source files securely…');
       for (let index = 0; index < files.length; index += 1) {
@@ -251,6 +250,16 @@ function App() {
     if (!project.buildJobId) return;
     try { const result = await api.get('/api/engine/builds/' + encodeURIComponent(project.buildJobId)); await api.post('/api/projects/' + encodeURIComponent(project.id) + '/engine-state', { deploymentStatus: result.data.status, deploymentId: result.data.deploymentId || undefined }); const refreshed = await api.get('/api/projects'); setProjects(refreshed.data.projects ?? []); setNotice('Build status refreshed: ' + result.data.status + '.'); }
     catch (err) { setNotice(err instanceof Error ? err.message : 'Could not refresh build status.'); }
+  }
+  async function refreshInspection(project: Project) {
+    if (!project.inspectionJobId) return;
+    try {
+      const result = await api.get('/api/engine/inspection-jobs/' + encodeURIComponent(project.inspectionJobId));
+      await api.post('/api/projects/' + encodeURIComponent(project.id) + '/engine-state', { inspectionStatus: result.data.status });
+      const refreshed = await api.get('/api/projects'); setProjects(refreshed.data.projects ?? []);
+      const framework = result.data.result?.framework;
+      setNotice('Inspection status: ' + result.data.status + (framework ? ' · Detected ' + framework : '') + '.');
+    } catch (err) { setNotice(err instanceof Error ? err.message : 'Could not refresh inspection status.'); }
   }
   async function deleteProject(projectId: string) {
     try {
@@ -346,7 +355,7 @@ function App() {
                   ref={inputRef}
                   type="file"
                   multiple
-                  accept=".zip,.html,.htm,.jsx,.tsx,.js,.ts,.css,.vue,.json"
+                  accept={acceptedExtensions.join(',')}
                   hidden
                   onChange={event => {
                     if (event.target.files) addFiles(event.target.files);
@@ -579,13 +588,14 @@ function App() {
               <article className="panel project-card" key={project.id}>
                 <div className="project-card-top">
                   <div className="icon-tile"><FolderGit2 size={19} /></div>
-                  <span className={"status " + (project.deploymentStatus === "failed" ? "status-error" : "status-neutral")}>{project.deploymentStatus || "Draft"}</span>
+                  <span className={"status " + (project.deploymentStatus === "failed" ? "status-error" : "status-neutral")}>{project.deploymentStatus || project.inspectionStatus || "Draft"}</span>
                 </div>
                 <h2>{project.name}</h2>
                 <p>{project.framework} · {project.fileCount} file{project.fileCount === 1 ? '' : 's'}</p>
                 <div className="project-meta"><span>{formatBytes(project.uploadedBytes ?? 0)} uploaded</span><span>{project.uploadedCount ?? 0}/{project.fileCount} files</span></div>
-                {project.slug && <div className="project-analysis"><strong>Hosting slug: {project.slug}</strong><span>Connected to Go deployment engine</span></div>}
+                {project.slug && <div className="project-analysis"><strong>Hosting slug: {project.slug}</strong><span>Connected to Go deployment engine</span>{project.inspectionStatus && <small>Source inspection: {project.inspectionStatus}</small>}</div>}
                 {project.buildJobId && <button className="text-button project-delete" onClick={() => refreshBuild(project)}>Refresh build status <Activity size={14} /></button>}
+                {project.inspectionJobId && <button className="text-button project-delete" onClick={() => refreshInspection(project)}>Refresh inspection status <Activity size={14} /></button>}
                 {project.deploymentStatus === "succeeded" && project.slug && engineStatus.publicBaseUrl && <a className="text-button project-delete" href={engineStatus.publicBaseUrl.replace(/\/$/, "") + "/" + project.slug} target="_blank" rel="noreferrer">Open live deployment <ArrowRight size={14} /></a>}
                 {project.analysis && <div className="project-analysis"><strong>{project.analysis.deploymentTarget}</strong><span>Package manager: {project.analysis.packageManager} · Entry: {project.analysis.entrypoint}</span>{project.analysis.warnings.length > 0 && <small>{project.analysis.warnings[0]}</small>}</div>}
                 <button className="text-button project-delete" onClick={() => deleteProject(project.id)}>Delete draft <X size={14} /></button>
